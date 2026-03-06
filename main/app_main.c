@@ -32,7 +32,6 @@
 #define WIFI_FAIL_BIT      BIT1
 #define STORAGE_NAMESPACE  "cfg"
 #define PROV_AP_SSID       "ESP32C2_CFG"
-#define PROV_AP_PASS       "12345678"
 #define PROV_TCP_PORT      9000
 #define UART_PORT          UART_NUM_0
 #define UART_RX_BUF        256
@@ -175,14 +174,13 @@ static esp_err_t wifi_start_ap(void)
     wifi_config_t ap_config = {
         .ap = {
             .max_connection = 4,
-            .authmode = WIFI_AUTH_WPA2_PSK,
+            .authmode = WIFI_AUTH_OPEN,
             .channel = 1,
         },
     };
 
     snprintf((char *)ap_config.ap.ssid, sizeof(ap_config.ap.ssid), "%s", PROV_AP_SSID);
     ap_config.ap.ssid_len = strlen(PROV_AP_SSID);
-    snprintf((char *)ap_config.ap.password, sizeof(ap_config.ap.password), "%s", PROV_AP_PASS);
 
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG, "set mode failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap_config), TAG, "set AP config failed");
@@ -324,7 +322,11 @@ static void ble_restart_advertising(void)
     struct ble_gap_adv_params adv_params = {0};
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-    ble_gap_adv_start(s_ble_addr_type, NULL, BLE_HS_FOREVER, &adv_params, ble_gap_event, NULL);
+
+    int rc = ble_gap_adv_start(s_ble_addr_type, NULL, BLE_HS_FOREVER, &adv_params, ble_gap_event, NULL);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "ble_gap_adv_start failed rc=%d", rc);
+    }
 }
 
 static int ble_gap_event(struct ble_gap_event *event, void *arg)
@@ -412,14 +414,22 @@ static void ble_app_advertise(void)
     fields.name_len = strlen(name);
     fields.name_is_complete = 1;
 
-    ble_gap_adv_set_fields(&fields);
+    int rc = ble_gap_adv_set_fields(&fields);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "ble_gap_adv_set_fields failed rc=%d", rc);
+        return;
+    }
 
     ble_restart_advertising();
 }
 
 static void ble_on_sync(void)
 {
-    ble_hs_id_infer_auto(0, &s_ble_addr_type);
+    int rc = ble_hs_id_infer_auto(0, &s_ble_addr_type);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "ble_hs_id_infer_auto failed rc=%d", rc);
+        return;
+    }
     ble_app_advertise();
 }
 
@@ -436,8 +446,14 @@ static void ble_init(void)
     ble_svc_gatt_init();
 
     ble_setup_gatt_dynamic_uuid();
-    ble_gatts_count_cfg(s_gatt_svcs);
-    ble_gatts_add_svcs(s_gatt_svcs);
+    ESP_ERROR_CHECK(ble_svc_gap_device_name_set("ESP32C2-AT-BLE"));
+
+    int rc = ble_gatts_count_cfg(s_gatt_svcs);
+    ESP_ERROR_CHECK(rc == 0 ? ESP_OK : ESP_FAIL);
+    rc = ble_gatts_add_svcs(s_gatt_svcs);
+    ESP_ERROR_CHECK(rc == 0 ? ESP_OK : ESP_FAIL);
+    rc = ble_gatts_start();
+    ESP_ERROR_CHECK(rc == 0 ? ESP_OK : ESP_FAIL);
 
     ble_hs_cfg.sync_cb = ble_on_sync;
     nimble_port_freertos_init(ble_host_task);

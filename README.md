@@ -2,7 +2,7 @@
 
 本项目实现：
 
-1. **默认 AP 配网**：开机启动 `ESP32C2_CFG` 热点 + `9000` TCP Server。
+1. **默认 AP 配网**：开机启动 `ESP32C2_CFG` 开放热点（无密码）+ `9000` TCP Server。
 2. **收到路由参数后切 STA**：连接路由成功后，按配置连接业务 TCP Server（客户端）。
 3. **配置持久化**：Wi-Fi、业务服务端、BLE UUID 写入 NVS，重启自动恢复。
 4. **透传关系固定**：仅支持 UART<->TCP Client 与 UART<->BLE，BLE 与 TCP 不直接透传。
@@ -11,7 +11,7 @@
 
 ## 手机 APP 通过 AP TCP 配网
 
-手机连 `ESP32C2_CFG`，向 `9000` 端口发送 JSON：
+手机连 `ESP32C2_CFG`（开放网络，无密码），向 `9000` 端口发送 JSON：
 
 ```json
 {"wifi_ssid":"HomeWiFi","wifi_pass":"12345678","server_ip":"192.168.1.100","server_port":7001}
@@ -70,3 +70,15 @@ TCP 下行：仅转发到 UART。
   - TCP 下行 -> UART
   - BLE Write -> UART
 
+
+
+## 编译目标与 Flash 配置
+
+本工程默认按 `ESP32-C2` + `4MB Flash` 使用，建议先执行：
+
+```bash
+idf.py set-target esp32c2
+idf.py build
+```
+
+如需重新生成 sdkconfig，可在 menuconfig 中确认 Flash Size 为 `4MB`。
