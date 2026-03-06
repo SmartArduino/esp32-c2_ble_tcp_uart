@@ -5,7 +5,7 @@
 1. **默认 AP 配网**：开机启动 `ESP32C2_CFG` 热点 + `9000` TCP Server。
 2. **收到路由参数后切 STA**：连接路由成功后，按配置连接业务 TCP Server（客户端）。
 3. **配置持久化**：Wi-Fi、业务服务端、BLE UUID 写入 NVS，重启自动恢复。
-4. **BLE 外设双向透传**：手机写 BLE 特征会转发到 TCP Client；TCP Server 下行数据会通过 BLE Notify 回传手机。
+4. **透传关系固定**：仅支持 UART<->TCP Client 与 UART<->BLE，BLE 与 TCP 不直接透传。
 5. **支持 AT 配网/连服/BLE参数配置**。
 6. **恢复出厂**：AT 指令清空配置。
 
@@ -29,17 +29,23 @@
 - `READY`：已完成配网
 - `UNPROV`：未配网
 
-写特征：BLE -> TCP 透传。
+写特征：BLE -> UART 透传。
 
-Notify：TCP -> BLE 透传（需手机订阅通知）。
+UART 数据模式下可把 UART 上行同时发往 TCP Client（若已连接）和 BLE Notify（若已连接）。
+
+TCP 下行：仅转发到 UART。
 
 ## AT 指令
 
 - `AT`
 - `AT+SETCFG=<json>`
+- `AT+WIFICFG=<ssid>,<pass>`
+- `AT+SRVCFG=<server_ip>,<port>`
 - `AT+CONNECT`：STA 已联网时，立即尝试连接业务 TCP Server
 - `AT+STATUS?`
 - `AT+SAVE`
+- `AT+ENTM`：进入 UART 数据透传模式
+- `AT+EXIT`：退出 UART 数据透传模式（或发送 `+++`）
 - `AT+FACTORY`
 - `AT+BLEUUID?`
 - `AT+BLEUUID=<svc_hex>,<chr_hex>` 例如：`AT+BLEUUID=FFF0,FFF1`
@@ -51,3 +57,15 @@ Notify：TCP -> BLE 透传（需手机订阅通知）。
 - `main/app_main.c`：AP 配网、STA、TCP Client、NVS、BLE、AT 主逻辑
 - `main/CMakeLists.txt`
 - `CMakeLists.txt`
+
+
+### UART 数据透传模式
+
+- 进入方式：`AT+ENTM`。
+- 退出方式：`AT+EXIT` 或连续发送 `+++`。
+- 数据路径：
+  - UART 上行 -> TCP Client（已连时）
+  - UART 上行 -> BLE Notify（已连时）
+  - TCP 下行 -> UART
+  - BLE Write -> UART
+

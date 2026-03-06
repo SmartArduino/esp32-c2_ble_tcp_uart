@@ -40,6 +40,7 @@
 #define TCP_RX_BUF         256
 #define DEFAULT_SVC_UUID16 0xFFF0
 #define DEFAULT_CHR_UUID16 0xFFF1
+#define AT_ESCAPE_SEQ      "+++"
 
 static const char *TAG = "esp32c2_gateway";
 
@@ -63,6 +64,7 @@ static esp_event_handler_instance_t s_wifi_evt_any;
 static esp_event_handler_instance_t s_ip_evt_got_ip;
 static int s_retry_num;
 static int s_tcp_client_fd = -1;
+static bool s_uart_data_mode;
 
 static uint8_t s_ble_addr_type;
 static uint16_t s_ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
@@ -350,6 +352,9 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
 
 static int ble_gatt_access(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
+    (void)conn_handle;
+    (void)attr_handle;
+    (void)arg;
     if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
         uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
         if (len == 0 || len > MAX_LINE) {
@@ -362,8 +367,8 @@ static int ble_gatt_access(uint16_t conn_handle, uint16_t attr_handle, struct bl
         }
 
         os_mbuf_copydata(ctxt->om, 0, len, buf);
-        if (s_tcp_client_fd >= 0) {
-            send(s_tcp_client_fd, buf, len, 0);
+        if (s_uart_data_mode) {
+            uart_write_bytes(UART_PORT, buf, len);
         }
         free(buf);
         return 0;
@@ -455,6 +460,29 @@ static bool parse_ble_uuid_cmd(const char *line, uint16_t *svc, uint16_t *chr)
     return true;
 }
 
+static bool parse_wifi_cfg_cmd(const char *line, char *ssid, char *pass)
+{
+    return sscanf(line, "AT+WIFICFG=%63[^,],%63s", ssid, pass) == 2;
+}
+
+static bool parse_server_cfg_cmd(const char *line, char *ip, uint16_t *port)
+{
+    int port_tmp = 0;
+    if (sscanf(line, "AT+SRVCFG=%63[^,],%d", ip, &port_tmp) != 2) {
+        return false;
+    }
+    if (!validate_server(ip, port_tmp)) {
+        return false;
+    }
+    *port = (uint16_t)port_tmp;
+    return true;
+}
+
+static bool cfg_is_ready(void)
+{
+    return strlen(s_cfg.wifi_ssid) > 0 && strlen(s_cfg.wifi_pass) > 0 && validate_server(s_cfg.server_ip, s_cfg.server_port);
+}
+
 static void at_handle_line(const char *line)
 {
     if (strcmp(line, "AT") == 0) {
@@ -479,6 +507,36 @@ static void at_handle_line(const char *line)
         } else {
             printf("ERR\r\n");
         }
+        return;
+    }
+
+    if (strncmp(line, "AT+WIFICFG=", 11) == 0) {
+        char ssid[MAX_FIELD] = {0};
+        char pass[MAX_FIELD] = {0};
+        if (!parse_wifi_cfg_cmd(line, ssid, pass)) {
+            printf("ERR\r\n");
+            return;
+        }
+
+        snprintf(s_cfg.wifi_ssid, sizeof(s_cfg.wifi_ssid), "%s", ssid);
+        snprintf(s_cfg.wifi_pass, sizeof(s_cfg.wifi_pass), "%s", pass);
+        s_cfg.provisioned = cfg_is_ready();
+        printf(cfg_save() == ESP_OK ? "OK\r\n" : "ERR\r\n");
+        return;
+    }
+
+    if (strncmp(line, "AT+SRVCFG=", 10) == 0) {
+        char ip[MAX_FIELD] = {0};
+        uint16_t port = 0;
+        if (!parse_server_cfg_cmd(line, ip, &port)) {
+            printf("ERR\r\n");
+            return;
+        }
+
+        snprintf(s_cfg.server_ip, sizeof(s_cfg.server_ip), "%s", ip);
+        s_cfg.server_port = port;
+        s_cfg.provisioned = cfg_is_ready();
+        printf(cfg_save() == ESP_OK ? "OK\r\n" : "ERR\r\n");
         return;
     }
 
@@ -511,7 +569,20 @@ static void at_handle_line(const char *line)
     if (strcmp(line, "AT+FACTORY") == 0) {
         tcp_client_close();
         cfg_factory_reset();
+        s_uart_data_mode = false;
         esp_wifi_disconnect();
+        printf("OK\r\n");
+        return;
+    }
+
+    if (strcmp(line, "AT+ENTM") == 0) {
+        s_uart_data_mode = true;
+        printf("OK\r\n");
+        return;
+    }
+
+    if (strcmp(line, "AT+EXIT") == 0) {
+        s_uart_data_mode = false;
         printf("OK\r\n");
         return;
     }
@@ -541,14 +612,8 @@ static void tcp_rx_task(void *arg)
 
         int len = recv(s_tcp_client_fd, rx, sizeof(rx), 0);
         if (len > 0) {
-            if (s_ble_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
-                struct os_mbuf *om = ble_hs_mbuf_from_flat(rx, len);
-                if (om != NULL) {
-                    int rc = ble_gatts_notify_custom(s_ble_conn_handle, s_ble_char_val_handle, om);
-                    if (rc != 0) {
-                        ESP_LOGW(TAG, "BLE notify failed rc=%d", rc);
-                    }
-                }
+            if (s_uart_data_mode) {
+                uart_write_bytes(UART_PORT, (const char *)rx, len);
             }
             continue;
         }
@@ -573,10 +638,50 @@ static void uart_at_task(void *arg)
     uint8_t data[UART_RX_BUF];
     char line[MAX_LINE] = {0};
     size_t pos = 0;
+    size_t plus_count = 0;
 
     while (1) {
         int len = uart_read_bytes(UART_PORT, data, sizeof(data), pdMS_TO_TICKS(100));
         for (int i = 0; i < len; i++) {
+            if (s_uart_data_mode) {
+                if (data[i] == '+') {
+                    plus_count++;
+                    if (plus_count == strlen(AT_ESCAPE_SEQ)) {
+                        s_uart_data_mode = false;
+                        plus_count = 0;
+                        printf("\r\nOK\r\n");
+                    }
+                    continue;
+                }
+
+                if (plus_count > 0) {
+                    for (size_t j = 0; j < plus_count; j++) {
+                        if (s_tcp_client_fd >= 0) {
+                            send(s_tcp_client_fd, "+", 1, 0);
+                        }
+                        if (s_ble_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+                            struct os_mbuf *om = ble_hs_mbuf_from_flat("+", 1);
+                            if (om != NULL) {
+                                ble_gatts_notify_custom(s_ble_conn_handle, s_ble_char_val_handle, om);
+                            }
+                        }
+                    }
+                    plus_count = 0;
+                }
+
+                if (s_tcp_client_fd >= 0) {
+                    send(s_tcp_client_fd, &data[i], 1, 0);
+                }
+
+                if (s_ble_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+                    struct os_mbuf *om = ble_hs_mbuf_from_flat(&data[i], 1);
+                    if (om != NULL) {
+                        ble_gatts_notify_custom(s_ble_conn_handle, s_ble_char_val_handle, om);
+                    }
+                }
+                continue;
+            }
+
             if (data[i] == '\r' || data[i] == '\n') {
                 if (pos > 0) {
                     line[pos] = '\0';
