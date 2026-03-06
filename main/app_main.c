@@ -12,6 +12,7 @@
 #include "esp_event.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
@@ -572,6 +573,14 @@ static void at_handle_line(const char *line)
         s_uart_data_mode = false;
         esp_wifi_disconnect();
         printf("OK\r\n");
+        return;
+    }
+
+    if (strcmp(line, "AT+RST") == 0) {
+        printf("OK\r\n");
+        fflush(stdout);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_restart();
         return;
     }
 

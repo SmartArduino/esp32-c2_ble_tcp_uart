@@ -47,6 +47,7 @@ TCP 下行：仅转发到 UART。
 - `AT+ENTM`：进入 UART 数据透传模式
 - `AT+EXIT`：退出 UART 数据透传模式（或发送 `+++`）
 - `AT+FACTORY`
+- `AT+RST`：重启模组
 - `AT+BLEUUID?`
 - `AT+BLEUUID=<svc_hex>,<chr_hex>` 例如：`AT+BLEUUID=FFF0,FFF1`
 
